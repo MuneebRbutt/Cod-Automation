@@ -1,111 +1,224 @@
 const crypto = require('crypto');
 const supabase = require('../services/supabase');
+const whatsappService = require('../services/whatsappService');
 
+// Format phone to E.164
 const formatPhoneNumber = (phone) => {
   if (!phone) return null;
-  // Remove all non-numeric characters except '+'
   let cleaned = phone.replace(/[^\d+]/g, '');
-  
-  // If it doesn't start with a '+', assume it's a local Pakistani number or missing country code
   if (!cleaned.startsWith('+')) {
-    // If it starts with '0', remove the '0' and prepend '+92'
     if (cleaned.startsWith('0')) {
       cleaned = '+92' + cleaned.substring(1);
     } else {
-      // If it doesn't start with '0', just prepend '+92' assuming it's already missing the 0
       cleaned = '+92' + cleaned;
     }
   }
   return cleaned;
 };
 
+// DB Insert & WhatsApp Trigger Wrapper (Phases 3 & 4)
+const processOrderInsert = async (orderData) => {
+  const { data, error } = await supabase
+    .from('orders')
+    .insert([{
+      ...orderData,
+      status: 'pending',
+      message_status: 'pending',
+      clarification_sent: false,
+      retry_count: 0
+    }]);
+
+  if (error) {
+    console.error(`Error inserting order ${orderData.order_id}:`, error.message);
+    return;
+  }
+  
+  console.log(`✅ Successfully inserted order ${orderData.order_id} into Supabase.`);
+  
+  // Trigger Outbound WhatsApp automatically
+  await whatsappService.sendTemplateMessage(orderData.phone_number, 'hello_world', orderData.order_id);
+};
+
+// Phase 3: Shopify Webhook
 const handleShopifyWebhook = async (req, res) => {
   console.log('--- Incoming Shopify Webhook ---');
-  
-  // 1. Verify Request Authenticity (HMAC-SHA256)
   const hmacHeader = req.get('X-Shopify-Hmac-Sha256');
   const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
 
-  if (!hmacHeader || !secret) {
-    console.error('Missing HMAC header or SHOPIFY_WEBHOOK_SECRET in environment.');
-    return res.status(401).send('Unauthorized');
-  }
+  if (!hmacHeader || !secret) return res.status(401).send('Unauthorized');
+  
+  const hash = crypto.createHmac('sha256', secret).update(req.rawBody || '', 'utf8').digest('base64');
+  if (hash !== hmacHeader) return res.status(401).send('Unauthorized');
 
-  // The rawBody was captured in our express.json verify function (server.js)
-  const rawBody = req.rawBody;
-  const hash = crypto
-    .createHmac('sha256', secret)
-    .update(rawBody, 'utf8')
-    .digest('base64');
+  res.status(200).send('Webhook received');
 
-  if (hash !== hmacHeader) {
-    console.error('HMAC verification failed! Payload signature does not match.');
-    return res.status(401).send('Unauthorized');
-  }
-
-  // 2. Return 200 response immediately to avoid Shopify retries
-  res.status(200).send('Webhook received and verified');
-
-  // 3. Process payload asynchronously
   try {
     const payload = req.body;
-    
-    // Log every incoming payload for debugging
-    console.log('Verified Webhook Payload:', JSON.stringify(payload, null, 2));
-
-    // Extract necessary data
     const orderId = payload.id ? payload.id.toString() : null;
+    if (!orderId) return;
+
     const totalAmount = payload.total_price || payload.current_total_price || null;
+    let customerName = payload.customer ? `${payload.customer.first_name || ''} ${payload.customer.last_name || ''}`.trim() : null;
+    let phone = payload.customer?.phone || payload.customer?.default_address?.phone;
     
-    // Extract customer details robustly
-    let customerName = null;
-    let phone = null;
-    
-    if (payload.customer) {
-      customerName = `${payload.customer.first_name || ''} ${payload.customer.last_name || ''}`.trim();
-      phone = payload.customer.phone || payload.customer.default_address?.phone;
-    }
-    
-    // Fallbacks if phone or name is missing in customer object
     if (!phone && payload.billing_address) {
       phone = payload.billing_address.phone;
-      if (!customerName) {
-        customerName = `${payload.billing_address.first_name || ''} ${payload.billing_address.last_name || ''}`.trim();
+      if (!customerName) customerName = `${payload.billing_address.first_name || ''} ${payload.billing_address.last_name || ''}`.trim();
+    }
+    
+    await processOrderInsert({
+      order_id: orderId,
+      customer_name: customerName || 'Unknown Customer',
+      phone_number: formatPhoneNumber(phone),
+      total_amount: totalAmount,
+      business_id: req.query.business_id || req.get('x-business-id') || 'shopify'
+    });
+  } catch (err) {
+    console.error('Shopify Processing Error:', err);
+  }
+};
+
+// Phase 3: WooCommerce Webhook
+const handleWooCommerceWebhook = async (req, res) => {
+  console.log('--- Incoming WooCommerce Webhook ---');
+  const signature = req.get('x-wc-webhook-signature');
+  const secret = process.env.WOOCOMMERCE_WEBHOOK_SECRET;
+
+  if (!signature || !secret) return res.status(401).send('Unauthorized');
+
+  const hash = crypto.createHmac('sha256', secret).update(req.rawBody || '', 'utf8').digest('base64');
+  if (hash !== signature) return res.status(401).send('Unauthorized');
+
+  res.status(200).send('Webhook received');
+
+  try {
+    const payload = req.body;
+    console.log(`WooCommerce Payload Received for Order ID: ${payload.id}`);
+    
+    const orderId = payload.id ? payload.id.toString() : null;
+    if (!orderId) return;
+
+    const totalAmount = payload.total;
+    const customerName = `${payload.billing?.first_name || ''} ${payload.billing?.last_name || ''}`.trim();
+    const phone = payload.billing?.phone;
+
+    await processOrderInsert({
+      order_id: orderId,
+      customer_name: customerName || 'Unknown Customer',
+      phone_number: formatPhoneNumber(phone),
+      total_amount: totalAmount,
+      business_id: req.query.business_id || req.get('x-business-id') || 'woocommerce'
+    });
+  } catch (err) {
+    console.error('WooCommerce Processing Error:', err);
+  }
+};
+
+// Phase 3: Generic Endpoint
+const handleGenericWebhook = async (req, res) => {
+  console.log('--- Incoming Generic Webhook ---');
+  const { name, phone, order_id, amount } = req.body;
+
+  if (!name || !phone || !order_id || amount === undefined) {
+    return res.status(400).json({ error: 'Missing required fields: name, phone, order_id, amount' });
+  }
+
+  res.status(200).json({ status: 'success', message: 'Order received', order_id });
+
+  try {
+    await processOrderInsert({
+      order_id: order_id.toString(),
+      customer_name: name,
+      phone_number: formatPhoneNumber(phone),
+      total_amount: amount,
+      business_id: req.query.business_id || req.get('x-business-id') || 'generic'
+    });
+  } catch (err) {
+    console.error('Generic Processing Error:', err);
+  }
+};
+
+// Phase 5: Verify WhatsApp Webhook Handshake
+const verifyWhatsAppWebhook = (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
+    console.log('✅ WhatsApp Webhook verified');
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
+  }
+};
+
+// Phase 5: Handle Incoming WhatsApp Message (Replies)
+const handleWhatsAppIncoming = async (req, res) => {
+  res.status(200).send('EVENT_RECEIVED'); // Acknowledge Meta immediately
+
+  try {
+    const body = req.body;
+    
+    if (body.object === 'whatsapp_business_account') {
+      const entry = body.entry?.[0];
+      const changes = entry?.changes?.[0];
+      const value = changes?.value;
+      const messages = value?.messages;
+
+      if (messages && messages.length > 0) {
+        const msg = messages[0];
+        const from = msg.from; // Sender phone number
+        const textObj = msg.text;
+        
+        if (textObj && textObj.body) {
+          const incomingText = textObj.body.trim().toLowerCase();
+          console.log(`📩 Incoming message from ${from}: "${incomingText}"`);
+
+          const formattedPhone = `+${from.replace(/[^\d]/g, '')}`;
+
+          // Find the most recent pending order for this number
+          const { data: orders, error: fetchError } = await supabase
+            .from('orders')
+            .select('*')
+            .eq('phone_number', formattedPhone)
+            .eq('status', 'pending')
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+          if (fetchError || !orders || orders.length === 0) {
+            console.log(`No pending orders found for phone ${formattedPhone}. Ignoring message.`);
+            return;
+          }
+
+          const order = orders[0];
+          
+          if (incomingText === 'yes' || incomingText === 'haan') {
+            await supabase.from('orders').update({ status: 'confirmed' }).eq('id', order.id);
+            await whatsappService.sendTextMessage(from, `Thank you! Your order #${order.order_id} is now CONFIRMED.`, order.order_id);
+          } else if (incomingText === 'no' || incomingText === 'nahi') {
+            await supabase.from('orders').update({ status: 'cancelled' }).eq('id', order.id);
+            await whatsappService.sendTextMessage(from, `Understood. Your order #${order.order_id} has been CANCELLED.`, order.order_id);
+          } else {
+            // Handle nonsense reply
+            if (!order.clarification_sent) {
+              await supabase.from('orders').update({ clarification_sent: true }).eq('id', order.id);
+              await whatsappService.sendTextMessage(from, "I'm sorry, I didn't understand. Please reply with YES to confirm or NO to cancel.", order.order_id);
+            } else {
+              console.log(`Clarification already sent for order ${order.order_id}. Ignoring nonsense reply.`);
+            }
+          }
+        }
       }
     }
-    if (!phone && payload.shipping_address) {
-      phone = payload.shipping_address.phone;
-    }
-
-    const formattedPhone = formatPhoneNumber(phone);
-    const businessId = req.query.business_id || req.get('x-business-id') || null;
-
-    // 4. Insert into Supabase "orders" table
-    if (orderId) {
-      const { data, error } = await supabase
-        .from('orders')
-        .insert([{
-          order_id: orderId,
-          customer_name: customerName || 'Unknown Customer',
-          phone_number: formattedPhone,
-          total_amount: totalAmount,
-          status: 'pending',
-          business_id: businessId
-        }]);
-
-      if (error) {
-        console.error(`Error inserting order ${orderId} into Supabase:`, error.message);
-      } else {
-        console.log(`✅ Successfully inserted order ${orderId} into Supabase as pending.`);
-      }
-    } else {
-      console.warn('Webhook payload missing an order ID, skipped DB insertion.');
-    }
-  } catch (error) {
-    console.error('Unexpected error processing Shopify webhook:', error);
+  } catch (err) {
+    console.error('Error handling incoming WhatsApp message:', err);
   }
 };
 
 module.exports = {
-  handleShopifyWebhook
+  handleShopifyWebhook,
+  handleWooCommerceWebhook,
+  handleGenericWebhook,
+  verifyWhatsAppWebhook,
+  handleWhatsAppIncoming
 };

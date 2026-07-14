@@ -1,7 +1,11 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 const testRoutes = require('./routes/testRoutes');
+const webhookRoutes = require('./routes/webhookRoutes');
+const dashboardRoutes = require('./routes/dashboardRoutes');
+const { startScheduler } = require('./services/scheduler');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -15,21 +19,27 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: true }));
 
+// Serve static frontend for dashboard
+app.use(express.static(path.join(__dirname, '../public')));
+
 // Routes
 app.use('/api', testRoutes);
-const webhookRoutes = require('./routes/webhookRoutes');
 app.use('/webhook', webhookRoutes);
+app.use('/dashboard', dashboardRoutes);
 
-// Root fallback
+// Root routes to UI
 app.get('/', (req, res) => {
-  res.send('Cod Automation Backend is running. Check /api/health for status.');
+  res.sendFile(path.join(__dirname, '../public/index.html'));
 });
+
+// Start Background Scheduler
+startScheduler();
 
 // Start Server
 const server = app.listen(PORT, () => {
   console.log(`🚀 Server is running on port ${PORT}`);
+  console.log(`Dashboard: http://localhost:${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/api/health`);
-  console.log(`Database test: http://localhost:${PORT}/api/test-db`);
 });
 
 process.on('exit', (code) => {
@@ -41,4 +51,3 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
-

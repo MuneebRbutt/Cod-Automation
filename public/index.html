@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Order Dashboard</title>
+    <style>
+        :root {
+            --primary: #4f46e5;
+            --background: #0f172a;
+            --surface: #1e293b;
+            --text: #f8fafc;
+            --text-muted: #94a3b8;
+            --border: #334155;
+        }
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            background-color: var(--background);
+            color: var(--text);
+            margin: 0;
+            padding: 2rem;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+        }
+        h1 { margin: 0; font-weight: 600; }
+        .controls {
+            display: flex;
+            gap: 1rem;
+        }
+        select, input, button {
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text);
+            font-size: 0.9rem;
+        }
+        button {
+            background: var(--primary);
+            border: none;
+            cursor: pointer;
+            font-weight: 500;
+            transition: opacity 0.2s;
+        }
+        button:hover { opacity: 0.9; }
+        
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 0.75rem;
+            overflow: hidden;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        th {
+            background: rgba(0,0,0,0.2);
+            font-weight: 500;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        tr:last-child td { border-bottom: none; }
+        .badge {
+            padding: 0.25rem 0.5rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+        .badge.pending { background: #ca8a04; color: #fefce8; }
+        .badge.confirmed { background: #16a34a; color: #f0fdf4; }
+        .badge.cancelled { background: #dc2626; color: #fef2f2; }
+        .badge.unconfirmed_manual { background: #9333ea; color: #faf5ff; }
+        
+        /* Auth Modal */
+        #auth-modal {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 50;
+        }
+        #auth-modal.hidden { display: none; }
+        .modal-content {
+            background: var(--surface);
+            padding: 2rem;
+            border-radius: 1rem;
+            width: 100%;
+            max-width: 400px;
+            text-align: center;
+        }
+        .modal-content input {
+            width: calc(100% - 2rem);
+            margin: 1rem 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="auth-modal" class="hidden">
+        <div class="modal-content">
+            <h2>Enter API Key</h2>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">Please enter your Dashboard API key to view orders.</p>
+            <input type="password" id="api-key-input" placeholder="DASHBOARD_API_KEY">
+            <button onclick="saveApiKey()">Access Dashboard</button>
+        </div>
+    </div>
+
+    <div class="container" id="dashboard" style="display: none;">
+        <div class="header">
+            <h1>Order Dashboard</h1>
+            <div class="controls">
+                <select id="status-filter" onchange="fetchOrders()">
+                    <option value="all">All Statuses</option>
+                    <option value="pending">Pending</option>
+                    <option value="confirmed">Confirmed</option>
+                    <option value="cancelled">Cancelled</option>
+                    <option value="unconfirmed_manual">Unconfirmed Manual</option>
+                </select>
+                <button onclick="logout()">Logout</button>
+            </div>
+        </div>
+        
+        <div class="card">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Order ID</th>
+                        <th>Customer</th>
+                        <th>Phone</th>
+                        <th>Amount</th>
+                        <th>Status</th>
+                        <th>Date</th>
+                    </tr>
+                </thead>
+                <tbody id="orders-table-body">
+                    <!-- Rows will be injected here -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>
