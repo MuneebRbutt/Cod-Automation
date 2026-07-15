@@ -35,8 +35,14 @@ const processOrderInsert = async (orderData) => {
   
   console.log(`✅ Successfully inserted order ${orderData.order_id} into Supabase.`);
   
-  // Trigger Outbound WhatsApp automatically
-  await whatsappService.sendTemplateMessage(orderData.phone_number, 'hello_world', orderData.order_id);
+  // Trigger Outbound WhatsApp asynchronously
+  try {
+    whatsappService.sendConfirmationMessage(orderData).catch(err => {
+      console.error(`Error in async sendConfirmationMessage for order ${orderData.order_id}:`, err);
+    });
+  } catch (err) {
+    console.error(`Failed to initiate WhatsApp confirmation for order ${orderData.order_id}:`, err);
+  }
 };
 
 // Phase 3: Shopify Webhook
@@ -205,17 +211,37 @@ const handleWhatsAppIncoming = async (req, res) => {
 
           const order = orders[0];
           
-          if (incomingText === 'yes' || incomingText === 'haan') {
+          const confirmVariants = ['yes', 'y', 'confirm', 'haan', 'han', 'ji han', 'ji haan'];
+          const cancelVariants = ['no', 'n', 'cancel', 'nahi', 'nahin'];
+
+          if (confirmVariants.includes(incomingText)) {
             await supabase.from('orders').update({ status: 'confirmed' }).eq('id', order.id);
-            await whatsappService.sendTextMessage(from, `Thank you! Your order #${order.order_id} is now CONFIRMED.`, order.order_id);
-          } else if (incomingText === 'no' || incomingText === 'nahi') {
+            
+            let confirmText = `Thank you! Your order #${order.order_id} is now CONFIRMED.`;
+            if (order.language === 'ur' || order.language === 'roman_ur') {
+              confirmText = `Shukriya! Aap ka order #${order.order_id} CONFIRM ho gaya hai.`;
+            }
+            await whatsappService.sendTextMessage(from, confirmText, order.order_id);
+            
+          } else if (cancelVariants.includes(incomingText)) {
             await supabase.from('orders').update({ status: 'cancelled' }).eq('id', order.id);
-            await whatsappService.sendTextMessage(from, `Understood. Your order #${order.order_id} has been CANCELLED.`, order.order_id);
+            
+            let cancelText = `Understood. Your order #${order.order_id} has been CANCELLED.`;
+            if (order.language === 'ur' || order.language === 'roman_ur') {
+              cancelText = `Theek hai. Aap ka order #${order.order_id} CANCEL kar diya gaya hai.`;
+            }
+            await whatsappService.sendTextMessage(from, cancelText, order.order_id);
+            
           } else {
             // Handle nonsense reply
             if (!order.clarification_sent) {
               await supabase.from('orders').update({ clarification_sent: true }).eq('id', order.id);
-              await whatsappService.sendTextMessage(from, "I'm sorry, I didn't understand. Please reply with YES to confirm or NO to cancel.", order.order_id);
+              
+              let clarificationText = "I'm sorry, I didn't understand. Please reply with YES to confirm or NO to cancel.";
+              if (order.language === 'ur' || order.language === 'roman_ur') {
+                clarificationText = "Maaf kijiye, main samjha nahi. Baraye meharbani confirm karne ke liye YES ya cancel karne ke liye NO reply karein.";
+              }
+              await whatsappService.sendTextMessage(from, clarificationText, order.order_id);
             } else {
               console.log(`Clarification already sent for order ${order.order_id}. Ignoring nonsense reply.`);
             }

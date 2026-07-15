@@ -5,7 +5,7 @@ const path = require('path');
 const testRoutes = require('./routes/testRoutes');
 const webhookRoutes = require('./routes/webhookRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
-const { startScheduler } = require('./services/scheduler');
+const { startScheduler } = require('./services/retryScheduler');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
