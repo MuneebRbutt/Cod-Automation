@@ -8,13 +8,18 @@ const getOrders = async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized. Invalid or missing API key.' });
   }
 
-  const { status } = req.query;
+  const { status, sort, business_id } = req.query;
   
   try {
-    let query = supabase.from('orders').select('*').order('created_at', { ascending: false });
+    const isAscending = sort === 'asc';
+    let query = supabase.from('orders').select('*').order('created_at', { ascending: isAscending });
     
     if (status && status !== 'all') {
       query = query.eq('status', status);
+    }
+
+    if (business_id) {
+      query = query.eq('business_id', business_id);
     }
 
     const { data, error } = await query;

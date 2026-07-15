@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orders Dashboard</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f4f4f9; color: #333; margin: 0; }
+        .container { max-width: 1200px; margin: 0 auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .header-controls { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
+        select, button, input { padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
+        button { background: #007bff; color: white; border: none; cursor: pointer; transition: 0.2s; }
+        button:hover { background: #0056b3; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background-color: #f8f9fa; }
+        .status-badge { padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; text-transform: uppercase; }
+        .status-pending { background: #ffeeba; color: #856404; }
+        .status-confirmed { background: #d4edda; color: #155724; }
+        .status-cancelled { background: #f8d7da; color: #721c24; }
+        .status-unconfirmed_manual { background: #cce5ff; color: #004085; }
+        #auth-section { margin-bottom: 20px; padding: 20px; background: #e9ecef; border-radius: 8px; text-align: center; }
+        #auth-section input { width: 250px; margin-right: 10px; }
+        #error-msg { color: #dc3545; font-weight: bold; margin-bottom: 15px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Orders Dashboard</h1>
+        
+        <div id="auth-section">
+            <h3>Authentication Required</h3>
+            <p>Please enter your Dashboard API Key to continue.</p>
+            <input type="password" id="api-key-input" placeholder="Secret Key...">
+            <button onclick="saveApiKey()">Save & View Orders</button>
+        </div>
+
+        <div id="dashboard-content" style="display: none;">
+            <div class="header-controls">
+                <div>
+                    <label>Filter Status:</label>
+                    <select id="status-filter" onchange="fetchOrders()">
+                        <option value="all">All</option>
+                        <option value="pending">Pending</option>
+                        <option value="confirmed">Confirmed</option>
+                        <option value="cancelled">Cancelled</option>
+                        <option value="unconfirmed_manual">Unconfirmed Manual</option>
+                    </select>
+                </div>
+                <div>
+                    <button onclick="fetchOrders()">Refresh Data</button>
+                    <button onclick="clearApiKey()" style="background: #dc3545; margin-left: 10px;">Logout</button>
+                </div>
+            </div>
+
+            <div id="error-msg"></div>
+
+            <div style="overflow-x: auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Order ID</th>
+                            <th>Customer</th>
+                            <th>Phone</th>
+                            <th>Status</th>
+                            <th>Retries</th>
+                            <th>Created At</th>
+                        </tr>
+                    </thead>
+                    <tbody id="orders-table-body">
+                        <!-- Rows injected here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_KEY_STORAGE_KEY = 'dashboard_api_key';
+
+        function checkAuth() {
+            const key = localStorage.getItem(API_KEY_STORAGE_KEY);
+            if (key) {
+                document.getElementById('auth-section').style.display = 'none';
+                document.getElementById('dashboard-content').style.display = 'block';
+                fetchOrders();
+            } else {
+                document.getElementById('auth-section').style.display = 'block';
+                document.getElementById('dashboard-content').style.display = 'none';
+            }
+        }
+
+        function saveApiKey() {
+            const val = document.getElementById('api-key-input').value.trim();
+            if (val) {
+                localStorage.setItem(API_KEY_STORAGE_KEY, val);
+                document.getElementById('error-msg').innerText = '';
+                checkAuth();
+            }
+        }
+
+        function clearApiKey() {
+            localStorage.removeItem(API_KEY_STORAGE_KEY);
+            checkAuth();
+        }
+
+        async function fetchOrders() {
+            const key = localStorage.getItem(API_KEY_STORAGE_KEY);
+            const status = document.getElementById('status-filter').value;
+            const errorMsg = document.getElementById('error-msg');
+            const tbody = document.getElementById('orders-table-body');
+            
+            errorMsg.innerText = 'Loading orders...';
+            errorMsg.style.color = '#333';
+            
+            try {
+                const response = await fetch(`/dashboard/orders?status=${status}`, {
+                    headers: { 'x-api-key': key }
+                });
+
+                if (response.status === 401) {
+                    clearApiKey();
+                    errorMsg.innerText = 'Invalid API Key. Please login again.';
+                    errorMsg.style.color = '#dc3545';
+                    return;
+                }
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const data = await response.json();
+                errorMsg.innerText = '';
+                
+                tbody.innerHTML = '';
+                if (data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #666;">No orders found.</td></tr>';
+                    return;
+                }
+
+                data.forEach(order => {
+                    const row = document.createElement('tr');
+                    
+                    const statusClass = `status-${order.status || 'pending'}`;
+                    const dateStr = new Date(order.created_at).toLocaleString();
+
+                    row.innerHTML = `
+                        <td><strong>${order.order_id || 'N/A'}</strong></td>
+                        <td>${order.customer_name || 'N/A'}</td>
+                        <td>${order.phone_number || 'N/A'}</td>
+                        <td><span class="status-badge ${statusClass}">${order.status || 'pending'}</span></td>
+                        <td>${order.retry_count || 0}</td>
+                        <td>${dateStr}</td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            } catch (error) {
+                console.error(error);
+                errorMsg.innerText = 'Failed to load orders. Is the server running?';
+                errorMsg.style.color = '#dc3545';
+            }
+        }
+
+        // Init
+        checkAuth();
+    </script>
+</body>
+</html>

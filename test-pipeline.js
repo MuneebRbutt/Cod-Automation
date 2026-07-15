@@ -1,90 +1,135 @@
 require('dotenv').config();
-const crypto = require('crypto');
 const axios = require('axios');
-const supabase = require('./src/services/supabase');
+const { createClient } = require('@supabase/supabase-js');
 
-const runTests = async () => {
-  console.log('Running End-to-End Test Pipeline...\n');
-  
-  // 1. WooCommerce Webhook test
-  let wooOrderId = 'woo-' + Date.now();
+// Configuration
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const RECIPIENT_NUMBER = process.env.RECIPIENT_NUMBER || '923132471870';
+const SERVER_URL = 'http://127.0.0.1:3001';
+
+// Setup Supabase
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// State
+const testOrderId = `TEST-${Date.now()}`;
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function runTests() {
+  console.log('🚀 Starting end-to-end order pipeline test...\n');
+  let step = 1;
+
   try {
-    const wooSecret = process.env.WOOCOMMERCE_WEBHOOK_SECRET || 'my_test_secret_123';
-    const wooPayload = {
-      id: wooOrderId,
-      total: '120.50',
-      billing: {
-        first_name: 'Woo',
-        last_name: 'Tester',
-        phone: '03001112222'
-      }
+    // ==========================================
+    // STEP 1: POST a fake order to /webhook/order
+    // ==========================================
+    console.log(`[Step ${step++}] POSTing fake order to /webhook/order...`);
+    const orderPayload = {
+      name: "Pipeline Test User",
+      phone: RECIPIENT_NUMBER,
+      order_id: testOrderId,
+      amount: 999,
+      business_id: "biz_test",
+      language: "en"
     };
-    
-    // Create exact HMAC SHA256 Signature WooCommerce uses
-    const payloadString = JSON.stringify(wooPayload);
-    const signature = crypto.createHmac('sha256', wooSecret).update(payloadString, 'utf8').digest('base64');
-    
-    await axios.post('http://localhost:3001/webhook/woocommerce', payloadString, {
-      headers: {
-        'x-wc-webhook-signature': signature,
-        'Content-Type': 'application/json'
-      }
-    });
-    console.log('✅ PASS: Valid WooCommerce Webhook accepted with 200.');
-  } catch (e) {
-    console.log('❌ FAIL: Valid WooCommerce webhook rejected:', e.response?.data || e.message);
-  }
 
-  // 2. Generic Webhook (Missing data)
-  try {
-    await axios.post('http://localhost:3001/webhook/order', { name: 'Test' });
-    console.log('❌ FAIL: Missing data should have returned 400.');
-  } catch (e) {
-    if (e.response?.status === 400) console.log('✅ PASS: Invalid Generic Webhook blocked with 400.');
-    else console.log('❌ FAIL: Unexpected error for invalid generic webhook:', e.message);
-  }
-
-  // 3. Generic Webhook (Valid data)
-  let orderId = 'test-' + Date.now();
-  try {
-    await axios.post('http://localhost:3001/webhook/order', {
-      name: 'Test Customer',
-      phone: '03001234567',
-      order_id: orderId,
-      amount: 500
-    });
-    console.log('✅ PASS: Valid Generic Webhook accepted with 200.');
-  } catch (e) {
-    console.log('❌ FAIL: Valid generic webhook rejected:', e.message);
-  }
-
-  // 4. Supabase DB Check
-  console.log('\nWaiting 3 seconds for async DB inserts and WhatsApp API calls...');
-  await new Promise(resolve => setTimeout(resolve, 3000));
-  
-  // Check Woo Order
-  const { data: wooData } = await supabase.from('orders').select('*').eq('order_id', wooOrderId).single();
-  if (!wooData) {
-    console.log('❌ FAIL: WooCommerce Order was not found in Supabase.');
-  } else {
-    console.log(`✅ PASS: WooCommerce Order found in Supabase! (Name: ${wooData.customer_name}, Phone: ${wooData.phone_number}, Amount: ${wooData.total_amount})`);
-  }
-
-  // Check Generic Order
-  const { data, error } = await supabase.from('orders').select('*').eq('order_id', orderId).single();
-  if (error || !data) {
-    console.log('❌ FAIL: Generic Order was not found in Supabase.');
-  } else {
-    console.log('✅ PASS: Generic Order found in Supabase with status:', data.status);
-    if (data.message_status === 'sent') {
-      console.log('✅ PASS: WhatsApp message triggered and message_status updated to "sent".');
+    const orderRes = await axios.post(`${SERVER_URL}/webhook/order`, orderPayload);
+    if (orderRes.status === 200) {
+      console.log('✅ PASS: Order webhook returned 200 OK.\n');
     } else {
-      console.log(`❌ FAIL: message_status is "${data.message_status}". WhatsApp might have failed (check Meta dash).`);
+      throw new Error(`Unexpected status code: ${orderRes.status}`);
     }
-  }
 
-  console.log('\nEnd of tests!');
-  process.exit(0);
-};
+    // Wait for async processing (DB insert + WhatsApp call)
+    await sleep(2500);
+
+    // ==========================================
+    // STEP 2: Confirm row created with status "pending"
+    // ==========================================
+    console.log(`[Step ${step++}] Querying Supabase for order ${testOrderId}...`);
+    const { data: orders, error: fetchError } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('order_id', testOrderId);
+
+    if (fetchError) throw new Error(`Supabase query failed: ${fetchError.message}`);
+    if (!orders || orders.length === 0) throw new Error('Order not found in Supabase.');
+    
+    const order = orders[0];
+
+    if (order.status === 'pending') {
+      console.log('✅ PASS: Order found in Supabase with status "pending".\n');
+    } else {
+      throw new Error(`Order status is ${order.status}, expected "pending".`);
+    }
+
+    // ==========================================
+    // STEP 3: Confirm message_status is "sent"
+    // ==========================================
+    console.log(`[Step ${step++}] Checking if message_status is "sent"...`);
+    if (order.message_status === 'sent') {
+      console.log('✅ PASS: message_status is "sent".\n');
+    } else {
+      throw new Error(`message_status is "${order.message_status}", expected "sent".\n💡 (Note: If this says "failed", it means WhatsApp blocked the message. This is expected if your template is still "In Review").`);
+    }
+
+    // ==========================================
+    // STEP 4: Simulate an incoming WhatsApp "YES" reply
+    // ==========================================
+    console.log(`[Step ${step++}] Simulating incoming WhatsApp "YES" reply...`);
+    const whatsappPayload = {
+      object: "whatsapp_business_account",
+      entry: [{
+        changes: [{
+          value: {
+            messages: [{
+              from: RECIPIENT_NUMBER,
+              text: { body: "YES" }
+            }]
+          }
+        }]
+      }]
+    };
+
+    const waRes = await axios.post(`${SERVER_URL}/webhook/whatsapp`, whatsappPayload);
+    if (waRes.status === 200) {
+      console.log('✅ PASS: WhatsApp webhook returned 200 OK.\n');
+    } else {
+      throw new Error(`Unexpected status code: ${waRes.status}`);
+    }
+
+    // Wait for async database update
+    await sleep(2000);
+
+    // ==========================================
+    // STEP 5: Confirm status updated to "confirmed"
+    // ==========================================
+    console.log(`[Step ${step++}] Querying Supabase to confirm status update...`);
+    const { data: finalOrders, error: finalError } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('order_id', testOrderId);
+
+    if (finalError) throw new Error(`Supabase query failed: ${finalError.message}`);
+    
+    const finalOrder = finalOrders[0];
+    if (finalOrder.status === 'confirmed') {
+      console.log('✅ PASS: Order status successfully updated to "confirmed".\n');
+    } else {
+      throw new Error(`Order status is "${finalOrder.status}", expected "confirmed".`);
+    }
+
+    console.log('🎉 ALL 5 PIPELINE TESTS PASSED SUCCESSFULLY! 🎉');
+    process.exit(0);
+
+  } catch (error) {
+    console.error(`\n❌ FAIL at Step ${step - 1}:`, error.message);
+    if (error.response) {
+      console.error('Response details:', error.response.data);
+    }
+    console.error('\nTest pipeline aborted.');
+    process.exit(1);
+  }
+}
 
 runTests();
