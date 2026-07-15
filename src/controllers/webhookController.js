@@ -84,9 +84,14 @@ const handleWooCommerceWebhook = async (req, res) => {
   const signature = req.get('x-wc-webhook-signature');
   const secret = process.env.WOOCOMMERCE_WEBHOOK_SECRET;
 
+  console.log('WooCommerce Signature received:', signature);
+  console.log('Secret used:', secret);
+  console.log('req.rawBody exists?', !!req.rawBody);
+
   if (!signature || !secret) return res.status(401).send('Unauthorized');
 
   const hash = crypto.createHmac('sha256', secret).update(req.rawBody || '', 'utf8').digest('base64');
+  console.log('Generated hash:', hash);
   if (hash !== signature) return res.status(401).send('Unauthorized');
 
   res.status(200).send('Webhook received');
@@ -94,6 +99,7 @@ const handleWooCommerceWebhook = async (req, res) => {
   try {
     const payload = req.body;
     console.log(`WooCommerce Payload Received for Order ID: ${payload.id}`);
+    console.log(JSON.stringify(payload, null, 2));
     
     const orderId = payload.id ? payload.id.toString() : null;
     if (!orderId) return;
@@ -117,10 +123,16 @@ const handleWooCommerceWebhook = async (req, res) => {
 // Phase 3: Generic Endpoint
 const handleGenericWebhook = async (req, res) => {
   console.log('--- Incoming Generic Webhook ---');
-  const { name, phone, order_id, amount } = req.body;
+  const { name, phone, order_id, amount, business_id, language } = req.body;
 
   if (!name || !phone || !order_id || amount === undefined) {
     return res.status(400).json({ error: 'Missing required fields: name, phone, order_id, amount' });
+  }
+
+  const formattedPhone = formatPhoneNumber(phone);
+  const phoneRegex = /^\+[1-9]\d{7,14}$/;
+  if (!formattedPhone || !phoneRegex.test(formattedPhone)) {
+    return res.status(400).json({ error: 'Invalid phone number format' });
   }
 
   res.status(200).json({ status: 'success', message: 'Order received', order_id });
@@ -129,9 +141,10 @@ const handleGenericWebhook = async (req, res) => {
     await processOrderInsert({
       order_id: order_id.toString(),
       customer_name: name,
-      phone_number: formatPhoneNumber(phone),
+      phone_number: formattedPhone,
       total_amount: amount,
-      business_id: req.query.business_id || req.get('x-business-id') || 'generic'
+      business_id: business_id || req.query.business_id || req.get('x-business-id') || 'generic',
+      language: language || 'en'
     });
   } catch (err) {
     console.error('Generic Processing Error:', err);
