@@ -119,15 +119,17 @@ const sendConfirmationMessage = async (order) => {
     template: {
       name: templateName,
       language: { code: templateLangCode },
-      components: [
-        {
-          type: "body",
-          parameters: [
-            { type: "text", text: order.customer_name || 'Customer' },
-            { type: "text", text: order.order_id || 'Unknown' }
-          ]
-        }
-      ]
+      ...(templateName !== 'hello_world' && {
+        components: [
+          {
+            type: "body",
+            parameters: [
+              { type: "text", text: order.customer_name || 'Customer' },
+              { type: "text", text: order.order_id || 'Unknown' }
+            ]
+          }
+        ]
+      })
     }
   };
 

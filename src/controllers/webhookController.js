@@ -9,6 +9,8 @@ const formatPhoneNumber = (phone) => {
   if (!cleaned.startsWith('+')) {
     if (cleaned.startsWith('0')) {
       cleaned = '+92' + cleaned.substring(1);
+    } else if (cleaned.startsWith('92')) {
+      cleaned = '+' + cleaned;
     } else {
       cleaned = '+92' + cleaned;
     }
@@ -18,10 +20,11 @@ const formatPhoneNumber = (phone) => {
 
 // DB Insert & WhatsApp Trigger Wrapper (Phases 3 & 4)
 const processOrderInsert = async (orderData) => {
+  const { language, ...dbOrderData } = orderData;
   const { data, error } = await supabase
     .from('orders')
     .insert([{
-      ...orderData,
+      ...dbOrderData,
       status: 'pending',
       message_status: 'pending',
       clarification_sent: false,
